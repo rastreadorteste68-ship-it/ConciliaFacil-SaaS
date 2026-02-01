@@ -1,0 +1,7 @@
+{
+  "name": "ConciliaFacil SaaS",
+  "description": "Professional payment reconciliation SaaS with AI-powered semantic matching and universal document parsing.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
