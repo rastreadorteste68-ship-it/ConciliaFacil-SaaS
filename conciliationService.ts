@@ -2,35 +2,64 @@
 import { GoogleGenAI, Type } from "@google/genai";
 import { Client, MonthStatus } from './types';
 import { storage } from './storage';
+import * as XLSX from 'xlsx';
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
+/**
+ * Extrai nomes únicos do texto de faturamento para garantir que nenhum cliente seja esquecido.
+ * Refinado para lidar com cabeçalhos e formatação CSV/Tabular de forma robusta.
+ */
+function extractAllClientNamesFromBilling(billingText: string): string[] {
+  const lines = billingText.split(/\r?\n/);
+  const names = new Set<string>();
+  
+  // Lista de palavras reservadas que não devem ser tratadas como clientes
+  const blacklist = ['nome', 'cliente', 'razão social', 'billing', 'faturamento', 'total', 'valor', 'empresa'];
+  
+  lines.forEach(line => {
+    // Tenta diferentes delimitadores comuns
+    const parts = line.split(/[;,|\t]/);
+    const candidate = parts[0]?.trim();
+    
+    if (candidate && 
+        candidate.length > 2 && 
+        !blacklist.includes(candidate.toLowerCase()) &&
+        !/^\d+$/.test(candidate)) { // Ignora se for apenas números (ex: IDs sozinhos)
+      names.add(candidate);
+    }
+  });
+  
+  const finalNames = Array.from(names);
+  console.log(`Clientes extraídos do faturamento: ${finalNames.length}`);
+  return finalNames;
+}
+
 export async function processReconciliation(billingText: string, bankText: string): Promise<Client[]> {
   const existingClients = storage.getClients();
-  const clientsContext = existingClients.map(c => ({ id: c.id, name: c.name, startDate: c.startDate }));
-
+  const allBillingNames = extractAllClientNamesFromBilling(billingText);
+  
   const prompt = `
-    Atue como Especialista em Auditoria de Fluxo de Caixa.
+    ATUE COMO AUDITOR FINANCEIRO IA.
     
-    DADOS DO CONTEXTO (CLIENTES JÁ EXISTENTES):
-    ${JSON.stringify(clientsContext)}
-
     TAREFA:
-    Conciliar faturamento esperado com extrato bancário.
+    Analise o EXTRATO BANCÁRIO e identifique pagamentos para os clientes listados na COBRANÇA.
     
-    REGRAS:
-    1. EXTRATO: Analise APENAS entradas de crédito (depósitos, PIX recebidos). IGNORE débitos.
-    2. MATCH: Use similaridade para associar entradas do extrato aos clientes da lista acima.
-    3. DATA INÍCIO: Se um pagamento for detectado ANTES da 'startDate' do cliente, ignore-o para este relatório de auditoria.
-    4. COMPETÊNCIA: Gere os status apenas para os meses em que o cliente já estava ativo (mês/ano >= startDate).
-    
-    RETORNE UM ARRAY JSON contendo os dados conciliados apenas para os clientes identificados:
-    {
-      "clientId": "id do contexto",
-      "months": [
-        { "month": 1-12, "year": 2024-2026, "status": "PAID", "paymentDates": ["YYYY-MM-DD"], "amount": 0.0 }
-      ]
-    }
+    REGRAS CRÍTICAS:
+    1. Se houver match entre um nome no extrato e um cliente, retorne os detalhes do pagamento.
+    2. Realize match semântico (ex: "J. Silva" no banco = "João Silva" na cobrança).
+    3. Retorne APENAS os matches encontrados. 
+    4. NÃO ignore clientes, mas foque em encontrar os créditos no extrato.
+
+    FORMATO DE RETORNO (JSON):
+    [
+      {
+        "nameInBilling": "Nome Exato como aparece na lista de cobrança",
+        "months": [
+          { "month": 2, "year": 2026, "status": "PAID", "paymentDates": ["2026-02-05"], "amount": 450.0 }
+        ]
+      }
+    ]
   `;
 
   try {
@@ -38,39 +67,65 @@ export async function processReconciliation(billingText: string, bankText: strin
       model: 'gemini-3-flash-preview',
       contents: [
         { text: prompt },
+        { text: `LISTA DE COBRANÇA:\n${billingText}` },
         { text: `EXTRATO BANCÁRIO:\n${bankText}` }
       ],
-      config: {
-        responseMimeType: "application/json",
-      }
+      config: { responseMimeType: "application/json" }
     });
 
-    const aiMatches = JSON.parse(response.text || "[]");
+    const matches = JSON.parse(response.text || "[]");
     
-    // Merge AI results with storage
-    const updatedClients = existingClients.map(client => {
-      const match = aiMatches.find((m: any) => m.clientId === client.id);
-      if (match) {
-        // Only update months that are NOT manually paid and satisfy startDate
-        const newMonths = [...client.months];
-        match.months.forEach((aiMonth: MonthStatus) => {
-          const existingIdx = newMonths.findIndex(m => m.month === aiMonth.month && m.year === aiMonth.year);
-          if (existingIdx !== -1) {
-            if (newMonths[existingIdx].status !== 'MANUAL_PAID') {
-              newMonths[existingIdx] = { ...aiMonth, source: 'ai' };
-            }
-          } else {
-             newMonths.push({ ...aiMonth, source: 'ai' });
+    // CONSTRUÇÃO DA LISTA FINAL (REGRA DE ENRIQUECIMENTO)
+    // Usamos allBillingNames como base para garantir que TODOS os 47+ apareçam
+    const finalClients: Client[] = allBillingNames.map(name => {
+      // 1. Procura se já existia na base local
+      const original = existingClients.find(c => c.name.toLowerCase() === name.toLowerCase());
+      
+      // 2. Procura se a IA achou pagamento agora
+      const aiMatch = matches.find((m: any) => m.nameInBilling.toLowerCase() === name.toLowerCase());
+      
+      // 3. Mescla meses (Mantém manuais, atualiza com novos da IA)
+      const currentMonths: MonthStatus[] = original?.months || [];
+      const newAiMonths: MonthStatus[] = aiMatch?.months || [];
+      
+      const mergedMonths = [...currentMonths];
+      
+      newAiMonths.forEach(newM => {
+        const idx = mergedMonths.findIndex(m => m.month === newM.month && m.year === newM.year);
+        if (idx !== -1) {
+          // Só sobrescreve se não for marcação manual
+          if (mergedMonths[idx].status !== 'MANUAL_PAID') {
+            mergedMonths[idx] = { ...newM, source: 'ai' };
           }
-        });
-        return { ...client, months: newMonths };
-      }
-      return client;
+        } else {
+          mergedMonths.push({ ...newM, source: 'ai' });
+        }
+      });
+
+      return {
+        id: original?.id || crypto.randomUUID(),
+        name: name,
+        startDate: original?.startDate || "2025-01",
+        expectedAmount: original?.expectedAmount || 450,
+        months: mergedMonths,
+        progress: 0
+      };
     });
 
-    return updatedClients;
+    return finalClients;
   } catch (error) {
-    console.error("Erro na conciliação estratégica:", error);
-    throw error;
+    console.error("Erro na conciliação:", error);
+    // Em caso de erro na IA, retornamos a lista de nomes apenas (sem novos pagamentos) 
+    return allBillingNames.map(name => {
+      const original = existingClients.find(c => c.name.toLowerCase() === name.toLowerCase());
+      return {
+        id: original?.id || crypto.randomUUID(),
+        name: name,
+        startDate: original?.startDate || "2025-01",
+        expectedAmount: original?.expectedAmount || 450,
+        months: original?.months || [],
+        progress: 0
+      };
+    });
   }
 }

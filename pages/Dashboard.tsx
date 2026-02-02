@@ -1,6 +1,15 @@
 
 import React, { useState, useEffect } from 'react';
-import { Plus, FileDown, CheckCircle2, MoreVertical, X, Calendar, DollarSign, ArrowRight, Check, UserPlus } from 'lucide-react';
+import { 
+  Plus, 
+  FileDown, 
+  CheckCircle2, 
+  X, 
+  Check, 
+  UserPlus, 
+  Trash2, 
+  AlertCircle 
+} from 'lucide-react';
 import { storage } from '../storage';
 import { Client, MonthStatus } from '../types';
 import { jsPDF } from 'jspdf';
@@ -10,13 +19,13 @@ const Dashboard: React.FC = () => {
   const [clients, setClients] = useState<Client[]>([]);
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
-  const [newClient, setNewClient] = useState({ name: '', startDate: '2025-01', expectedAmount: 0 });
+  const [newClient, setNewClient] = useState({ name: '', startDate: '2025-01', expectedAmount: 450 });
 
   useEffect(() => {
     setClients(storage.getClients());
   }, []);
 
-  // Window fixed for UI consistency: Feb 2026 backwards to 14 months ago
+  // Janela fixa: de Fev/2026 voltando 14 meses
   const BASE_DATE = new Date(2026, 1, 1);
   const WINDOW_MONTHS = 14;
 
@@ -28,12 +37,10 @@ const Dashboard: React.FC = () => {
       const d = new Date(BASE_DATE);
       d.setMonth(BASE_DATE.getMonth() - i);
       
-      // Skip months before client started
       if (d < clientStart) continue;
 
       const monthNum = d.getMonth() + 1;
       const year = d.getFullYear();
-      
       const stored = client.months.find(m => m.month === monthNum && m.year === year);
       
       const monthShort = d.toLocaleString('pt-BR', { month: 'short' }).replace('.', '');
@@ -46,7 +53,7 @@ const Dashboard: React.FC = () => {
         yearNum: year,
         status: stored?.status || 'UNPAID',
         paymentDates: stored?.paymentDates || [],
-        amount: stored?.amount
+        amount: stored?.amount || client.expectedAmount
       });
     }
     return timeline;
@@ -71,10 +78,10 @@ const Dashboard: React.FC = () => {
   const handleAddClient = (e: React.FormEvent) => {
     e.preventDefault();
     if (!newClient.name) return;
-    const added = storage.addClient(newClient.name, newClient.startDate, newClient.expectedAmount);
-    setClients([...clients, added]);
+    const updatedList = storage.addClient(newClient.name, newClient.startDate, newClient.expectedAmount);
+    setClients(updatedList);
     setShowAddModal(false);
-    setNewClient({ name: '', startDate: '2025-01', expectedAmount: 0 });
+    setNewClient({ name: '', startDate: '2025-01', expectedAmount: 450 });
   };
 
   const handleTogglePayment = (clientId: string, monthNum: number, year: number) => {
@@ -85,11 +92,12 @@ const Dashboard: React.FC = () => {
         
         if (existingIdx !== -1) {
           const current = newMonths[existingIdx];
-          if (current.status === 'UNPAID') {
-            newMonths[existingIdx] = { ...current, status: 'MANUAL_PAID', source: 'manual', paymentDates: [new Date().toISOString().split('T')[0]] };
-          } else {
-            newMonths[existingIdx] = { ...current, status: 'UNPAID', source: 'manual', paymentDates: [] };
-          }
+          newMonths[existingIdx] = { 
+            ...current, 
+            status: current.status === 'UNPAID' ? 'MANUAL_PAID' : 'UNPAID',
+            source: 'manual',
+            paymentDates: current.status === 'UNPAID' ? [new Date().toISOString().split('T')[0]] : []
+          };
         } else {
           newMonths.push({
             month: monthNum,
@@ -101,59 +109,38 @@ const Dashboard: React.FC = () => {
           });
         }
         
-        const progress = calculateProgress({ ...c, months: newMonths });
-        return { ...c, months: newMonths, progress };
+        return { ...c, months: newMonths };
       }
       return c;
     });
     setClients(updated);
     storage.saveClients(updated);
-    if (selectedClient && selectedClient.id === clientId) {
+    if (selectedClient?.id === clientId) {
       setSelectedClient(updated.find(c => c.id === clientId) || null);
     }
   };
 
-  const exportPDF = () => {
-    const doc = new jsPDF();
-    doc.setFontSize(20);
-    doc.text("Relatório de Auditoria Mensal - ConciliaFacil", 15, 20);
-    
-    autoTable(doc, {
-      startY: 30,
-      head: [['Cliente', 'Início', 'Progresso', 'Status']],
-      body: clients.map(c => [
-        c.name,
-        c.startDate,
-        `${calculateProgress(c)}%`,
-        `${getAuditTimeline(c).filter(t => t.status !== 'UNPAID').length}/${getAuditTimeline(c).length} Pagos`
-      ]),
-    });
-    doc.save("auditoria_geral.pdf");
-  };
-
   return (
     <div className="space-y-12 animate-fade-in">
-      {/* Top Stats */}
       <section className="grid grid-cols-1 md:grid-cols-3 gap-6 no-print">
         <div className="bg-white p-10 rounded-[2.5rem] shadow-sm border border-slate-50 transition-all hover:shadow-md">
-          <span className="text-[11px] font-black text-slate-400 uppercase tracking-widest block mb-2">Clientes Auditados</span>
+          <span className="text-[11px] font-black text-slate-400 uppercase tracking-widest block mb-2">Carteira Total</span>
           <span className="text-6xl font-black text-slate-900 leading-none">{stats.totalClients}</span>
         </div>
         <div className="bg-white p-10 rounded-[2.5rem] shadow-sm border border-slate-50 transition-all hover:shadow-md">
-          <span className="text-[11px] font-black text-slate-400 uppercase tracking-widest block mb-2">Valor Total Pago</span>
+          <span className="text-[11px] font-black text-slate-400 uppercase tracking-widest block mb-2">Recuperado</span>
           <span className="text-4xl font-black text-emerald-500">R$ {stats.totalPaid.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
         </div>
         <div className="bg-white p-10 rounded-[2.5rem] shadow-sm border border-slate-50 transition-all hover:shadow-md">
-          <span className="text-[11px] font-black text-slate-400 uppercase tracking-widest block mb-2">Meses em Aberto</span>
+          <span className="text-[11px] font-black text-slate-400 uppercase tracking-widest block mb-2">Inadimplência (Meses)</span>
           <span className="text-6xl font-black text-rose-500 leading-none">{stats.openMonths}</span>
         </div>
       </section>
 
-      {/* Grid Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h2 className="text-3xl font-black text-slate-900 tracking-tighter">Auditoria Mensal</h2>
-          <p className="text-slate-400 text-sm font-medium mt-1">Gestão da carteira de clientes e status de conciliação.</p>
+          <h2 className="text-3xl font-black text-slate-900 tracking-tighter">Gestão de Carteira</h2>
+          <p className="text-slate-400 text-sm font-medium mt-1">Exibindo todos os clientes cadastrados e seus respectivos status.</p>
         </div>
         <div className="flex items-center gap-3 no-print">
           <button 
@@ -163,15 +150,14 @@ const Dashboard: React.FC = () => {
             <UserPlus size={16} /> Novo Cliente
           </button>
           <button 
-            onClick={exportPDF}
-            className="bg-[#1a1c1e] text-white px-8 py-4 rounded-xl font-bold text-[11px] uppercase tracking-widest flex items-center gap-3 shadow-xl hover:bg-black transition-all"
+            onClick={() => { if(confirm("Limpar todos os dados?")) storage.clearAll(); }}
+            className="p-4 text-rose-300 hover:text-rose-500 transition-colors"
           >
-            <FileDown size={16} /> Exportar PDF
+            <Trash2 size={20} />
           </button>
         </div>
       </div>
 
-      {/* Client Cards Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
         {clients.map((client) => {
           const timeline = getAuditTimeline(client);
@@ -188,9 +174,9 @@ const Dashboard: React.FC = () => {
                 <div className="flex items-start justify-between mb-6">
                   <div className="space-y-1">
                     <h3 className="font-black text-slate-900 text-lg leading-tight tracking-tight group-hover:text-indigo-600 transition-colors">{client.name}</h3>
-                    <p className="text-slate-400 text-[10px] font-bold uppercase tracking-[0.2em]">Iniciado em {client.startDate}</p>
+                    <p className="text-slate-400 text-[10px] font-bold uppercase tracking-[0.2em]">Contrato desde {client.startDate}</p>
                   </div>
-                  <div className="bg-amber-50 text-amber-600 px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest">
+                  <div className={`px-3 py-1.5 rounded-full text-[9px] font-black uppercase tracking-widest ${paidCount === timeline.length ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>
                     {paidCount}/{timeline.length} Pagos
                   </div>
                 </div>
@@ -213,12 +199,12 @@ const Dashboard: React.FC = () => {
 
               <div className="p-8 pt-4 bg-white border-t border-slate-50">
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Progresso Real</span>
+                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Aderência Financeira</span>
                   <span className="text-[10px] font-black text-slate-900">{progress}%</span>
                 </div>
                 <div className="w-full h-1.5 bg-slate-100 rounded-full overflow-hidden">
                   <div 
-                    className={`h-full rounded-full transition-all duration-1000 ${progress === 100 ? 'bg-emerald-500' : 'bg-indigo-600'}`}
+                    className={`h-full rounded-full transition-all duration-1000 ${progress > 80 ? 'bg-emerald-500' : progress > 40 ? 'bg-amber-500' : 'bg-rose-500'}`}
                     style={{ width: `${progress}%` }}
                   />
                 </div>
@@ -228,65 +214,13 @@ const Dashboard: React.FC = () => {
         })}
       </div>
 
-      {/* Modal: Add Client */}
-      {showAddModal && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md animate-fade-in">
-          <form onSubmit={handleAddClient} className="bg-white w-full max-w-md rounded-[3rem] shadow-2xl p-10 space-y-6">
-            <header className="flex items-center justify-between mb-2">
-              <h3 className="text-2xl font-black text-slate-900">Novo Cliente</h3>
-              <button type="button" onClick={() => setShowAddModal(false)} className="text-slate-300 hover:text-rose-500"><X size={24}/></button>
-            </header>
-            <div className="space-y-4">
-              <div>
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 block">Nome / Razão Social</label>
-                <input 
-                  autoFocus
-                  required
-                  type="text" 
-                  value={newClient.name} 
-                  onChange={(e) => setNewClient({...newClient, name: e.target.value})}
-                  className="w-full bg-slate-50 border-none rounded-2xl p-4 font-bold text-slate-800 placeholder:text-slate-300" 
-                  placeholder="Ex: Amós Silva..."
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 block">Início Cobrança</label>
-                  <input 
-                    required
-                    type="month" 
-                    value={newClient.startDate} 
-                    onChange={(e) => setNewClient({...newClient, startDate: e.target.value})}
-                    className="w-full bg-slate-50 border-none rounded-2xl p-4 font-bold text-slate-800"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 block">Valor Mensal (R$)</label>
-                  <input 
-                    required
-                    type="number" 
-                    value={newClient.expectedAmount} 
-                    onChange={(e) => setNewClient({...newClient, expectedAmount: Number(e.target.value)})}
-                    className="w-full bg-slate-50 border-none rounded-2xl p-4 font-bold text-slate-800"
-                  />
-                </div>
-              </div>
-            </div>
-            <button type="submit" className="w-full bg-indigo-600 text-white py-5 rounded-2xl font-black uppercase tracking-[0.2em] shadow-lg hover:bg-indigo-700 transition-all">
-              Salvar Cliente
-            </button>
-          </form>
-        </div>
-      )}
-
-      {/* Client Detail Modal */}
       {selectedClient && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md animate-fade-in">
           <div className="bg-[#f8fafc] w-full max-w-2xl rounded-[3rem] shadow-2xl overflow-hidden max-h-[90vh] flex flex-col">
             <header className="p-8 bg-white border-b border-slate-100 flex items-center justify-between">
               <div>
                 <h3 className="text-2xl font-black text-slate-900">{selectedClient.name}</h3>
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Contrato iniciado em {selectedClient.startDate}</p>
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Auditoria Detalhada</p>
               </div>
               <button onClick={() => setSelectedClient(null)} className="p-3 text-slate-300 hover:text-rose-500 transition-colors bg-slate-50 rounded-xl">
                 <X size={24} />
@@ -297,7 +231,7 @@ const Dashboard: React.FC = () => {
               {getAuditTimeline(selectedClient).map((item, idx) => {
                 const isPaid = item.status !== 'UNPAID';
                 return (
-                  <div key={idx} className={`p-5 rounded-2xl border transition-all flex items-center justify-between ${isPaid ? 'bg-emerald-50/50 border-emerald-100' : 'bg-white border-slate-100'}`}>
+                  <div key={idx} className={`p-5 rounded-2xl border transition-all flex items-center justify-between ${isPaid ? 'bg-emerald-50/50 border-emerald-100' : 'bg-white border-slate-100 shadow-sm'}`}>
                     <div className="flex items-center gap-4">
                       <div className={`w-10 h-10 rounded-full flex items-center justify-center font-black text-[10px] ${
                         item.status === 'PAID' ? 'bg-emerald-500 text-white' : 
@@ -309,18 +243,17 @@ const Dashboard: React.FC = () => {
                       <div>
                         <p className="font-black text-slate-800 text-sm">{item.label} {item.year}</p>
                         <p className="text-[10px] font-bold text-slate-400">
-                          {item.status === 'PAID' ? `Detectado: ${item.paymentDates[0] || '-'}` : 
-                           item.status === 'MANUAL_PAID' ? `Confirmado em: ${item.paymentDates[0] || '-'}` :
-                           'Dívida em aberto'}
+                          {isPaid ? `Recebido: ${item.paymentDates[0]}` : 'Aguardando pagamento'}
                         </p>
                       </div>
                     </div>
                     <div className="flex items-center gap-4">
+                      {isPaid && <span className="font-black text-emerald-600 text-sm">R$ {item.amount.toLocaleString('pt-BR')}</span>}
                       <button 
                         onClick={(e) => { e.stopPropagation(); handleTogglePayment(selectedClient.id, item.monthNum, item.yearNum); }}
                         className={`text-[9px] font-black uppercase tracking-widest px-4 py-2 rounded-lg transition-all ${isPaid ? 'text-rose-500 bg-rose-50 hover:bg-rose-100' : 'text-indigo-600 bg-indigo-50 hover:bg-indigo-100'}`}
                       >
-                        {isPaid ? 'Remover' : 'Marcar ✔'}
+                        {isPaid ? 'Remover' : 'Marcar'}
                       </button>
                     </div>
                   </div>
@@ -330,10 +263,52 @@ const Dashboard: React.FC = () => {
 
             <footer className="p-8 bg-white border-t border-slate-50">
               <button onClick={() => setSelectedClient(null)} className="w-full bg-slate-900 text-white py-5 rounded-2xl font-black text-[11px] uppercase tracking-[0.2em] shadow-xl hover:bg-black transition-all">
-                Fechar Detalhamento
+                Fechar
               </button>
             </footer>
           </div>
+        </div>
+      )}
+
+      {showAddModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-md animate-fade-in">
+          <form onSubmit={handleAddClient} className="bg-white w-full max-w-md rounded-[3rem] shadow-2xl p-10 space-y-6">
+            <header className="flex items-center justify-between mb-2">
+              <h3 className="text-2xl font-black text-slate-900">Novo Cliente</h3>
+              <button type="button" onClick={() => setShowAddModal(false)} className="text-slate-300 hover:text-rose-500"><X size={24}/></button>
+            </header>
+            <div className="space-y-4">
+              <div>
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 block">Razão Social</label>
+                <input 
+                  autoFocus required type="text" value={newClient.name} 
+                  onChange={(e) => setNewClient({...newClient, name: e.target.value})}
+                  className="w-full bg-slate-50 border-none rounded-2xl p-4 font-bold text-slate-800 placeholder:text-slate-300 shadow-inner" 
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 block">Contrato</label>
+                  <input 
+                    required type="month" value={newClient.startDate} 
+                    onChange={(e) => setNewClient({...newClient, startDate: e.target.value})}
+                    className="w-full bg-slate-50 border-none rounded-2xl p-4 font-bold text-slate-800"
+                  />
+                </div>
+                <div>
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 block">Mensalidade</label>
+                  <input 
+                    required type="number" value={newClient.expectedAmount} 
+                    onChange={(e) => setNewClient({...newClient, expectedAmount: Number(e.target.value)})}
+                    className="w-full bg-slate-50 border-none rounded-2xl p-4 font-bold text-slate-800"
+                  />
+                </div>
+              </div>
+            </div>
+            <button type="submit" className="w-full bg-indigo-600 text-white py-5 rounded-2xl font-black uppercase tracking-[0.2em] shadow-lg hover:bg-indigo-700 transition-all">
+              Cadastrar
+            </button>
+          </form>
         </div>
       )}
     </div>
